@@ -1,0 +1,749 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Project SideFlow — 魔法将在屏幕边缘发生</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: #000;
+    color: #fff;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+      "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    overflow-x: hidden;
+    min-height: 100vh;
+  }
+  /* 响应式组件尺寸变量（JS 也会读取用于计算网格位置） */
+  :root {
+    --w-w: 230px;
+    --w-h: 160px;
+    --w-font: 12px;
+    --w-title: 13px;
+    --w-tag: 10px;
+  }
+  body {
+    background:
+      radial-gradient(ellipse at 50% 40%, #0a1220 0%, #050505 55%, #000 100%);
+  }
+  .mono { font-family: "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace; }
+
+  /* ——— 三维场景层 ——— */
+  #stage {
+    position: fixed; inset: 0; z-index: 0;
+    overflow: hidden;
+  }
+  #three-canvas { width: 100%; height: 100%; display: block; }
+
+  /* 极光边缘光 —— 屏幕右侧一条纵向极光带 */
+  .edge-aurora {
+    position: absolute; top: 0; right: 0; width: 180px; height: 100%;
+    background: linear-gradient(90deg,
+      transparent 0%,
+      rgba(0, 242, 254, 0.0) 20%,
+      rgba(0, 242, 254, 0.45) 70%,
+      rgba(79, 172, 254, 0.85) 100%);
+    filter: blur(32px);
+    opacity: 0;
+    pointer-events: none;
+    mix-blend-mode: screen;
+  }
+
+  /* 背景网格画布 */
+  .grid-wall {
+    position: absolute; inset: 0;
+    background-image:
+      linear-gradient(rgba(79,172,254,0.06) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(79,172,254,0.06) 1px, transparent 1px);
+    background-size: 64px 64px;
+    opacity: 0;
+    mask-image: radial-gradient(ellipse at center, #000 40%, transparent 85%);
+    -webkit-mask-image: radial-gradient(ellipse at center, #000 40%, transparent 85%);
+    transform: perspective(1200px) rotateX(0deg) scale(1);
+    pointer-events: none;
+  }
+
+  /* 毛玻璃遮罩 */
+  .glass-overlay {
+    position: absolute; inset: 0;
+    background: rgba(5, 8, 14, 0.55);
+    backdrop-filter: blur(16px) saturate(120%);
+    -webkit-backdrop-filter: blur(16px) saturate(120%);
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  /* 飞入组件容器 */
+  .widgets-layer {
+    position: absolute; inset: 0;
+    perspective: 1400px;
+    perspective-origin: 50% 50%;
+    transform-style: preserve-3d;
+    pointer-events: none;
+  }
+
+  /* 组件卡片 —— 以屏幕正中心为变换原点，尺寸从 CSS 变量读取 */
+  .widget {
+    position: absolute;
+    left: 50%; top: 50%;
+    width: var(--w-w);
+    height: var(--w-h);
+    margin-left: calc(var(--w-w) / -2);
+    margin-top: calc(var(--w-h) / -2);
+    border-radius: 18px;
+    background: linear-gradient(135deg,
+      rgba(255,255,255,0.06) 0%,
+      rgba(255,255,255,0.02) 100%);
+    border: 1px solid rgba(255,255,255,0.12);
+    box-shadow:
+      0 0 0 1px rgba(79,172,254,0.08) inset,
+      0 8px 40px rgba(0, 242, 254, 0.12),
+      0 4px 18px rgba(0,0,0,0.4);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    padding: 12px 14px;
+    color: #e6f0ff;
+    font-size: var(--w-font);
+    line-height: 1.5;
+    overflow: hidden;
+    opacity: 0;
+    transform-origin: 50% 50%;
+    transform-style: preserve-3d;
+    will-change: transform, opacity;
+  }
+  .widget::before {
+    content: "";
+    position: absolute; inset: 0;
+    border-radius: 18px;
+    background: linear-gradient(135deg,
+      rgba(79,172,254,0.18), transparent 50%);
+    pointer-events: none;
+  }
+  .widget::after {
+    content: "";
+    position: absolute; inset: -2px;
+    border-radius: 20px;
+    background: conic-gradient(from var(--angle, 0deg),
+      transparent 0deg,
+      rgba(0,242,254,0.5) 90deg,
+      transparent 180deg);
+    opacity: 0;
+    z-index: -1;
+    filter: blur(8px);
+  }
+  .widget .w-tag {
+    font-size: var(--w-tag);
+    letter-spacing: 0.15em;
+    color: #6ec4ff;
+    text-transform: uppercase;
+    opacity: 0.85;
+  }
+  .widget .w-title {
+    font-size: var(--w-title);
+    font-weight: 600;
+    color: #fff;
+    margin-top: 4px;
+  }
+  .widget .w-body {
+    margin-top: 6px;
+    color: rgba(230,240,255,0.75);
+  }
+
+  /* ——— 前景内容 ——— */
+  .foreground {
+    position: relative;
+    z-index: 10;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 40px 20px;
+    text-align: center;
+  }
+  .label {
+    display: inline-flex; align-items: center; gap: 10px;
+    font-size: clamp(11px, 1.4vw, 13px);
+    letter-spacing: 0.4em;
+    color: rgba(255,255,255,0.6);
+    opacity: 0;
+    white-space: nowrap;
+  }
+  .label .logo {
+    width: 22px; height: 22px; border-radius: 6px;
+    display: inline-flex; align-items: center; justify-content: center;
+    background: linear-gradient(135deg, #00F2FE, #4FACFE);
+    box-shadow: 0 0 20px rgba(0,242,254,0.5);
+  }
+  .label img {
+    width: clamp(24px, 3vw, 28px);
+    height: clamp(24px, 3vw, 28px);
+    border-radius: 50%;
+    box-shadow: 0 0 18px rgba(79,172,254,0.45);
+    object-fit: cover;
+  }
+
+  h1.main-title {
+    font-size: clamp(28px, 7.2vw, 96px);
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    line-height: 1.15;
+    margin: 24px 0 18px;
+    background: linear-gradient(90deg,
+      rgba(255,255,255,0.35) 0%,
+      #fff 50%,
+      rgba(255,255,255,0.35) 100%);
+    background-size: 200% 100%;
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    filter: drop-shadow(0 0 30px rgba(79,172,254,0.18));
+    opacity: 0;
+    position: relative;
+  }
+  .subtitle {
+    font-size: clamp(12px, 1.6vw, 18px);
+    color: #a1a1aa;
+    max-width: min(720px, 92vw);
+    line-height: 1.8;
+    opacity: 0;
+  }
+  .cta-wrap {
+    margin-top: 36px;
+    opacity: 0;
+  }
+  .cta {
+    position: relative;
+    display: inline-flex; align-items: center; gap: 10px;
+    padding: clamp(12px, 1.6vw, 16px) clamp(28px, 4vw, 36px);
+    border-radius: 999px;
+    background: linear-gradient(135deg, #00F2FE 0%, #4FACFE 100%);
+    color: #001624;
+    font-weight: 700;
+    font-size: clamp(12px, 1.6vw, 15px);
+    letter-spacing: 0.08em;
+    box-shadow:
+      0 0 0 1px rgba(255,255,255,0.18) inset,
+      0 10px 40px rgba(0,242,254,0.35);
+    cursor: pointer;
+    transition: transform 0.25s ease, box-shadow 0.25s ease;
+    border: none;
+    white-space: nowrap;
+  }
+  .cta:hover {
+    transform: translateY(-2px);
+    box-shadow:
+      0 0 0 1px rgba(255,255,255,0.3) inset,
+      0 18px 60px rgba(0,242,254,0.6);
+  }
+  .cta::before {
+    content: "";
+    position: absolute; inset: -4px;
+    border-radius: 999px;
+    background: radial-gradient(circle, rgba(0,242,254,0.35), transparent 70%);
+    opacity: 0;
+    z-index: -1;
+    transition: opacity 0.3s ease;
+    animation: breathe 3s ease-in-out infinite;
+  }
+  @keyframes breathe {
+    0%, 100% { opacity: 0.4; transform: scale(1); }
+    50% { opacity: 0.85; transform: scale(1.08); }
+  }
+
+  .footer-icons {
+    position: fixed;
+    bottom: 28px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    gap: 28px;
+    z-index: 20;
+    opacity: 0;
+  }
+  .footer-icons a {
+    opacity: 0.4;
+    transition: opacity 0.25s ease, transform 0.25s ease;
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+  .footer-icons a:hover { opacity: 1; transform: translateY(-2px); }
+  .footer-icons img { width: clamp(24px, 3vw, 28px); height: clamp(24px, 3vw, 28px); object-fit: contain; }
+
+  /* ——— 组件内容细节 ——— */
+  .w-code { font-family: "JetBrains Mono", Menlo, monospace; font-size: 11px; }
+  .w-code .kw { color: #ff7eb6; }
+  .w-code .str { color: #ffd166; }
+  .w-code .fn { color: #00f2fe; }
+  .w-code .cm { color: #6a7280; font-style: italic; }
+  .check-row { display: flex; align-items: center; gap: 6px; margin: 3px 0; }
+  .check-box {
+    width: 12px; height: 12px; border: 1px solid #4FACFE; border-radius: 3px;
+    display: inline-flex; align-items: center; justify-content: center;
+    color: #00F2FE; font-size: 10px;
+  }
+  .qr {
+    width: 56px; height: 56px;
+    background:
+      linear-gradient(45deg, #fff 25%, transparent 25%) 0 0/10px 10px,
+      linear-gradient(-45deg, #fff 25%, transparent 25%) 0 0/10px 10px,
+      linear-gradient(45deg, transparent 75%, #fff 75%) 5px 5px/10px 10px,
+      linear-gradient(-45deg, transparent 75%, #fff 75%) 5px 5px/10px 10px,
+      #000;
+    position: relative;
+  }
+  .chat-line {
+    display: inline-block;
+    background: rgba(79,172,254,0.12);
+    border: 1px solid rgba(79,172,254,0.25);
+    padding: 6px 10px;
+    border-radius: 10px;
+    font-size: 11px;
+    color: #e6f0ff;
+  }
+  .caret {
+    display: inline-block; width: 6px; height: 12px; background: #00F2FE;
+    margin-left: 2px; vertical-align: -2px;
+    animation: blink 0.8s steps(2) infinite;
+  }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  /* 小图缩略 */
+  .file-thumb {
+    width: 100%; height: 70px; border-radius: 8px;
+    background:
+      linear-gradient(120deg, #1a2540, #0b1630),
+      radial-gradient(circle at 30% 30%, #4FACFE, transparent 50%);
+    position: relative;
+    overflow: hidden;
+    border: 1px solid rgba(79,172,254,0.2);
+  }
+  .file-thumb::before {
+    content: "";
+    position: absolute; inset: 4px;
+    border: 1px dashed rgba(0,242,254,0.5);
+    border-radius: 6px;
+  }
+
+  /* ——— 响应式断点：根据屏幕宽度调整组件尺寸与文字 ——— */
+  /* 中等平板 / 大屏手机 */
+  @media (max-width: 960px) {
+    :root { --w-w: 200px; --w-h: 140px; --w-font: 11px; --w-title: 12px; --w-tag: 9px; }
+  }
+  /* 小屏手机 */
+  @media (max-width: 640px) {
+    :root { --w-w: 150px; --w-h: 105px; --w-font: 10px; --w-title: 11px; --w-tag: 9px; }
+    .widget { padding: 9px 11px; }
+    h1.main-title { letter-spacing: -0.01em; }
+    .foreground { padding: 30px 16px; }
+  }
+  /* 超小屏（iPhone SE 之类） */
+  @media (max-width: 420px) {
+    :root { --w-w: 128px; --w-h: 92px; --w-font: 10px; --w-title: 11px; --w-tag: 9px; }
+    .widget { padding: 7px 9px; }
+    .foreground { padding: 20px 12px; }
+    .label { letter-spacing: 0.3em; gap: 8px; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ========== 三维 / 动效 舞台 ========== -->
+<div id="stage">
+  <canvas id="three-canvas"></canvas>
+  <div class="edge-aurora" id="aurora"></div>
+
+  <div class="widgets-layer" id="widgets">
+    <!-- 飞入组件 -->
+    <div class="widget" data-widget="1" style="--angle: 10deg">
+      <div class="w-tag">CLIPBOARD</div>
+      <div class="w-title">卡片式剪贴板</div>
+      <div class="w-body w-code">
+        <span class="cm"># 一键转换</span><br/>
+        <span class="kw">def</span> <span class="fn">magic</span>(x):<br/>
+        &nbsp;&nbsp;<span class="kw">return</span> <span class="str">f"→ {x}"</span>
+      </div>
+    </div>
+
+    <div class="widget" data-widget="2" style="--angle: 90deg">
+      <div class="w-tag">MAGICLASS</div>
+      <div class="w-title">日程课表</div>
+      <div class="w-body">
+        <div class="check-row"><span class="check-box">✓</span><span>08:00 算法基础</span></div>
+        <div class="check-row"><span class="check-box">✓</span><span>10:30 工程实践</span></div>
+        <div class="check-row"><span class="check-box"></span><span>14:00 项目评审</span></div>
+      </div>
+    </div>
+
+    <div class="widget" data-widget="3" style="--angle: 170deg">
+      <div class="w-tag">DEVICE LINK</div>
+      <div class="w-title">连接二维码</div>
+      <div class="w-body" style="display:flex; gap:10px; align-items:center;">
+        <div class="qr"></div>
+        <div style="font-size:10px; color:#a8c8ff; line-height:1.5;">
+          扫描加入<br/>局域网协作<br/><span style="color:#00F2FE">SideFlow://local</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="widget" data-widget="4" style="--angle: 250deg">
+      <div class="w-tag">AI · DEEPSEEK</div>
+      <div class="w-title">流式对话</div>
+      <div class="w-body" style="margin-top:14px;">
+        <span class="chat-line">正在为你整理思路…<span class="caret"></span></span>
+      </div>
+    </div>
+
+    <div class="widget" data-widget="5" style="--angle: 320deg">
+      <div class="w-tag">MULTIMODAL</div>
+      <div class="w-title">多模态文件</div>
+      <div class="w-body">
+        <div class="file-thumb"></div>
+        <div style="margin-top:6px; color:#a8c8ff; font-size:10px;">OCR 自动提取 · 2,348 字</div>
+      </div>
+    </div>
+
+    <div class="widget" data-widget="6" style="--angle: 45deg">
+      <div class="w-tag">NOTES</div>
+      <div class="w-title">灵光速记</div>
+      <div class="w-body" style="color:#cfe0ff;">
+        “侧边栏的打开方式，才是工作流的起点。”<br/>
+        <span style="color:#6a7280; font-size:10px;">— 今天 14:22</span>
+      </div>
+    </div>
+
+    <div class="widget" data-widget="7" style="--angle: 135deg">
+      <div class="w-tag">TASKS</div>
+      <div class="w-title">今日任务</div>
+      <div class="w-body">
+        <div class="check-row"><span class="check-box">✓</span><span>官网动画开发</span></div>
+        <div class="check-row"><span class="check-box"></span><span>插件市场接入</span></div>
+        <div class="check-row"><span class="check-box"></span><span>内测邀请发送</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="grid-wall" id="gridWall"></div>
+  <div class="glass-overlay" id="glassOverlay"></div>
+</div>
+
+<!-- ========== 前景内容 ========== -->
+<div class="foreground">
+  <div class="label mono" id="label">
+    <img src="assets/icon.png" alt="SideFlow" onerror="this.style.display='none'"/>
+    <span>PROJECT SIDEFLOW</span>
+  </div>
+
+  <h1 class="main-title" id="mainTitle">魔法将在屏幕边缘发生</h1>
+
+  <p class="subtitle" id="subtitle">
+    本地优先、云端按需的跨平台"超级侧边栏 + 灵动岛"桌面端工作区
+  </p>
+
+  <div class="cta-wrap" id="ctaWrap">
+    <button class="cta" onclick="void(0)">敬请期待</button>
+  </div>
+</div>
+
+<div class="footer-icons" id="footerIcons">
+  <a href="https://github.com/SRInternet-Studio/SideFlow_WebSite/" target="_blank" rel="noopener" title="GitHub">
+    <img src="assets/github.png" alt="GitHub"/>
+  </a>
+  <a href="https://github.com/IntelliMarkets/SideFlow_Plugins_Index" target="_blank" rel="noopener" title="IntelliMarkets">
+    <img src="assets/CreativeN.png" alt="IntelliMarkets 插件中心"/>
+  </a>
+  <a href="https://space.bilibili.com/1969160969" target="_blank" rel="noopener" title="Bilibili">
+    <img src="assets/bilibili-color.png" alt="Bilibili"/>
+  </a>
+</div>
+
+<script>
+/* =====================================================
+   粒子尘埃 · 背景 Three.js 层
+   ===================================================== */
+(function initThreeBackground() {
+  const canvas = document.getElementById('three-canvas');
+  const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(60, window.innerWidth/window.innerHeight, 0.1, 1000);
+  camera.position.z = 60;
+
+  // —— 粒子：改为圆形（圆形 canvas 贴图）——
+  const COUNT = 900;
+  const positions = new Float32Array(COUNT * 3);
+  const colors = new Float32Array(COUNT * 3);
+  for (let i = 0; i < COUNT; i++) {
+    positions[i*3]   = (Math.random() - 0.5) * 200;
+    positions[i*3+1] = (Math.random() - 0.5) * 120;
+    positions[i*3+2] = (Math.random() - 0.5) * 180 - 40;
+    const t = Math.random();
+    colors[i*3]   = 0.0 + t * 0.2;
+    colors[i*3+1] = 0.7 + t * 0.3;
+    colors[i*3+2] = 1.0;
+  }
+  // 绘制一个径向渐变的圆作为粒子贴图，让方形像素点变成星星/圆点
+  const texCanvas = document.createElement('canvas');
+  texCanvas.width = 64; texCanvas.height = 64;
+  const texCtx = texCanvas.getContext('2d');
+  const grd = texCtx.createRadialGradient(32, 32, 0, 32, 32, 32);
+  grd.addColorStop(0.0, 'rgba(255,255,255,1)');
+  grd.addColorStop(0.35, 'rgba(200,230,255,0.85)');
+  grd.addColorStop(0.7, 'rgba(79,172,254,0.25)');
+  grd.addColorStop(1.0, 'rgba(0,242,254,0)');
+  texCtx.fillStyle = grd;
+  texCtx.fillRect(0, 0, 64, 64);
+  const dotTex = new THREE.CanvasTexture(texCanvas);
+  dotTex.needsUpdate = true;
+
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geom.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  const mat = new THREE.PointsMaterial({
+    size: 1.2,
+    map: dotTex,
+    vertexColors: true,
+    transparent: true,
+    opacity: 0.55,
+    alphaTest: 0.01,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+  });
+  const points = new THREE.Points(geom, mat);
+  scene.add(points);
+
+  window.addEventListener('resize', () => {
+    camera.aspect = window.innerWidth/window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+  });
+
+  let t0 = performance.now();
+  function tick() {
+    const t = (performance.now() - t0) * 0.0003;
+    // 自动旋转（只操作 rotation，不动 position.z / scale，让 GSAP 接管深度）
+    points.rotation.y = t * 0.4;
+    points.rotation.x = Math.sin(t * 0.3) * 0.08;
+    // 轻微上下浮动（对 y 做加法，避免覆盖 GSAP 对 x/z 的控制）
+    const baseY = points.userData.baseY || 0;
+    points.position.y = baseY + Math.sin(t * 1.2) * 0.6;
+    renderer.render(scene, camera);
+    requestAnimationFrame(tick);
+  }
+  tick();
+
+  // 暴露给 GSAP 时间线：points 对象本身 + 材质 + canvas（做 CSS blur 用）
+  window.__three = { points, material: mat, canvas: renderer.domElement };
+})();
+
+/* =====================================================
+   GSAP 开屏分幕动画 (约 3s)
+   ===================================================== */
+window.addEventListener('load', () => {
+  const tl = gsap.timeline({ defaults: { ease: "power2.out" } });
+
+  const aurora = document.getElementById('aurora');
+  const widgets = gsap.utils.toArray('.widget');
+  const gridWall = document.getElementById('gridWall');
+  const glassOverlay = document.getElementById('glassOverlay');
+  const label = document.getElementById('label');
+  const mainTitle = document.getElementById('mainTitle');
+  const subtitle = document.getElementById('subtitle');
+  const ctaWrap = document.getElementById('ctaWrap');
+  const footerIcons = document.getElementById('footerIcons');
+
+  // —— 初始化背景粒子状态：先重度模糊、位于相机前方正常深度 ——
+  const three = window.__three;
+  if (three) {
+    gsap.set(three.canvas, { filter: 'blur(18px)', webkitFilter: 'blur(18px)' });
+    gsap.set(three.points.position, { x: 0, y: 0, z: 0 });
+    gsap.set(three.points.scale, { x: 1, y: 1, z: 1 });
+    gsap.set(three.material, { size: 1.2, opacity: 0.55 });
+  }
+
+  // —— 响应式计算：根据 CSS 变量读取实际组件尺寸，动态决定网格 ——
+  const W = window.innerWidth, H = window.innerHeight;
+  const rootStyles = getComputedStyle(document.documentElement);
+  const wW = parseFloat(rootStyles.getPropertyValue('--w-w')) || 230;
+  const wH = parseFloat(rootStyles.getPropertyValue('--w-h')) || 160;
+
+  // 组件间距 = 组件尺寸 + 额外空隙，避免拥挤
+  const gap = 14;
+  const spacingX = wW + gap;
+  const spacingY = wH + gap;
+
+  // 根据屏幕宽度动态决定列数（2~4 列），行数按组件总数计算
+  const totalWidgets = widgets.length;
+  let cols;
+  if (W >= 960) cols = 4;
+  else if (W >= 640) cols = 3;
+  else if (W >= 420) cols = 3;
+  else cols = 2;
+  const rows = Math.max(2, Math.ceil(totalWidgets / cols));
+
+  // 网格墙时的组件缩放：越窄屏幕越小
+  const recessScale = W >= 960 ? 0.72 : W >= 640 ? 0.68 : 0.62;
+
+  // 飞入时的中间位置范围（按屏幕大小缩放）
+  const midRangeX = W * 0.45;
+  const midRangeY = H * 0.3;
+
+  // 初始化组件起始位置（屏幕右侧外，带近大远小透视）
+  widgets.forEach((w, i) => {
+    const startX = W * 0.6 + Math.random() * 180;
+    const startY = (Math.random() - 0.5) * Math.min(H * 0.55, 500);
+    gsap.set(w, {
+      x: startX,
+      y: startY,
+      z: -800,
+      rotateX: (Math.random() - 0.5) * 60,
+      rotateY: (Math.random() - 0.5) * 60,
+      rotateZ: (Math.random() - 0.5) * 40,
+      scale: 0.4,
+      opacity: 0,
+    });
+  });
+
+  // —— 幕 1: 边缘极光 (0.0 - 0.5) ——
+  tl.to(aurora, { opacity: 1, duration: 0.35, ease: "power2.out" }, 0);
+
+  // —— 幕 2: 组件飞入 + 3D 扰动 + 粒子由模糊变清晰 (0.5 - 1.3) ——
+  widgets.forEach((w, i) => {
+    const targetX = (Math.random() - 0.5) * midRangeX;
+    const targetY = (Math.random() - 0.5) * midRangeY;
+    tl.to(w, {
+      x: targetX,
+      y: targetY,
+      z: 0,
+      rotateX: (Math.random() - 0.5) * 20,
+      rotateY: (Math.random() - 0.5) * 30,
+      rotateZ: (Math.random() - 0.5) * 15,
+      scale: 1 + Math.random() * 0.12,
+      opacity: 1,
+      duration: 0.9,
+      ease: "elastic.out(1, 0.75)",
+    }, 0.45 + i * 0.05);
+  });
+  // 背景粒子：模糊 → 清晰（与组件飞入同步）
+  if (three) {
+    tl.to(three.canvas, {
+      filter: 'blur(0px)',
+      webkitFilter: 'blur(0px)',
+      duration: 0.85,
+      ease: "power2.out"
+    }, 0.45);
+    tl.fromTo(three.material, { size: 0.35 }, {
+      size: 1.2,
+      duration: 0.9,
+      ease: "power2.out"
+    }, 0.45);
+  }
+
+  // 极光衰减
+  tl.to(aurora, { opacity: 0.25, duration: 0.7, ease: "power1.inOut" }, 1.0);
+
+  // —— 幕 3: 深度退屏 + 网格吸附（背景粒子同步后退，产生 3D 纵深）(1.2 - 1.9) ——
+  widgets.forEach((w, i) => {
+    // 按照响应式列数计算网格坐标
+    const col = i % cols;
+    const row = Math.floor(i / cols) % rows;
+    const baseX = (col - (cols - 1) / 2) * spacingX;
+    const baseY = (row - (rows - 1) / 2) * spacingY;
+
+    tl.to(w, {
+      x: baseX,
+      y: baseY,
+      z: -500,
+      rotateX: 4,
+      rotateY: -6,
+      rotateZ: 0,
+      scale: recessScale,
+      opacity: 0.85,
+      duration: 0.7,
+      ease: "power3.inOut",
+    }, 1.25 + i * 0.03);
+  });
+  // —— 背景粒子同步后退：Z 轴向后 + 尺寸缩小 + 轻微变暗 ——
+  if (three) {
+    tl.to(three.points.position, {
+      z: -45,
+      duration: 0.75,
+      ease: "power3.inOut"
+    }, 1.25);
+    tl.to(three.points.scale, {
+      x: 0.55, y: 0.55, z: 0.55,
+      duration: 0.75,
+      ease: "power3.inOut"
+    }, 1.25);
+    tl.to(three.material, {
+      size: 0.55,
+      opacity: 0.38,
+      duration: 0.75,
+      ease: "power3.inOut"
+    }, 1.25);
+  }
+
+  tl.to(gridWall, { opacity: 0.55, duration: 0.6, ease: "power2.out" }, 1.35);
+  tl.to(gridWall, {
+    transform: "perspective(1200px) rotateX(12deg) scale(1)",
+    duration: 0.8,
+    ease: "power3.out"
+  }, 1.35);
+
+  // —— 幕 4: 高斯毛玻璃漫反射 (1.8 - 2.2) ——
+  tl.to(glassOverlay, {
+    opacity: 1,
+    duration: 0.5,
+    ease: "power2.out",
+    onStart: () => {
+      // 让组件退到玻璃之后看起来更模糊
+      widgets.forEach(w => {
+        gsap.to(w, { opacity: 0.55, duration: 0.5, ease: "power1.out" });
+      });
+    }
+  }, 1.8);
+
+  // —— 幕 5: 前景文本呼吸亮起 (2.0 - 3.0) ——
+  tl.to(label, {
+    opacity: 1, y: 0, duration: 0.6, ease: "power2.out"
+  }, 2.0);
+  gsap.set(label, { y: 10 });
+
+  // 主标题渐变扫光 + 淡入
+  tl.to(mainTitle, {
+    opacity: 1,
+    backgroundPosition: "0% 50%",
+    duration: 1.1,
+    ease: "power2.out",
+  }, 2.15);
+  gsap.set(mainTitle, { backgroundPosition: "-60% 50%", y: 8 });
+  tl.to(mainTitle, { y: 0, duration: 0.8 }, 2.15);
+
+  tl.to(subtitle, { opacity: 1, y: 0, duration: 0.7, ease: "power2.out" }, 2.35);
+  gsap.set(subtitle, { y: 14 });
+
+  tl.to(ctaWrap, { opacity: 1, y: 0, duration: 0.7, ease: "back.out(1.2)" }, 2.55);
+  gsap.set(ctaWrap, { y: 18 });
+
+  tl.to(footerIcons, { opacity: 1, y: 0, duration: 0.6, ease: "power2.out" }, 2.7);
+  gsap.set(footerIcons, { y: 10 });
+});
+
+/* 按钮主标题持续扫光 */
+setTimeout(() => {
+  gsap.to("#mainTitle", {
+    backgroundPosition: "200% 50%",
+    duration: 6,
+    ease: "none",
+    repeat: -1,
+    yoyo: false,
+  });
+}, 3100);
+</script>
+</body>
+</html>
